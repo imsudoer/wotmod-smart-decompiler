@@ -40,7 +40,7 @@
 wotmod-smart-decompiler/
 ├── wotmod_decompiler.py     # Консольная утилита для вызова всех функций
 ├── requirements.txt         # Зависимости для Python 3
-├── LICENSE                  # Лицензия MIT
+├── LICENSE                  # Лицензия GPL-3.0
 ├── README.md                # Документация
 ├── src/                     # Исходный код инструмента
 │   ├── deobfuscator.py      # Графовый анализатор CFG, поиск OEP, очистка инструкций
@@ -124,4 +124,4 @@ python wotmod_decompiler.py build ./DMod_src/safeShot -o F:/Tanki/mods/1.46.0.0/
 
 ## Лицензия
 
-MIT License. См. файл LICENSE.
+GNU General Public License v3.0 (GPL-3.0). См. файл LICENSE.

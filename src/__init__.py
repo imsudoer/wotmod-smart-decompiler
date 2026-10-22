@@ -7,4 +7,4 @@ and decompiling Python 2.7 mods (.wotmod / .mtmod) for World of Tanks / Mir Tank
 
 __version__ = "1.0.0"
 __author__ = "Antigravity & Contributor"
-__license__ = "MIT"
+__license__ = "GPL-3.0"
