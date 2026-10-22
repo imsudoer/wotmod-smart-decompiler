@@ -1,0 +1,23 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.tmp
+*.bak
+*.new
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE settings
+.vscode/*
+!.vscode/settings.json
+.idea/
+
+# Output directories
+decompiled_src/
+output/

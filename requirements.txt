@@ -1,0 +1,5 @@
+networkx>=3.0
+uncompyle6>=3.9.0
+xdis>=6.1.0
+click>=8.0.0
+Pillow>=10.0.0
