@@ -36,10 +36,29 @@ def decompile_file_or_dir(target_path, output_dir, pycdc_bin=None):
         else:
             pycdc_bin = shutil.which("pycdc") or "pycdc"
 
+    # Single standalone .pyc file handling
+    if os.path.isfile(target_path) and target_path.lower().endswith('.pyc'):
+        mod_name = os.path.splitext(os.path.basename(target_path))[0]
+        os.makedirs(output_dir, exist_ok=True)
+        dest_path = os.path.join(output_dir, f"{mod_name}.py")
+        print(f"=== Decompiling standalone bytecode: {os.path.basename(target_path)} ===")
+        with open(target_path, 'rb') as f:
+            data = f.read()
+        try:
+            src_code, is_pjo = decompile_bytecode(data, pycdc_bin=pycdc_bin)
+            status = "[PJOrion Deobfuscated]" if is_pjo else "[Clean]"
+            with open(dest_path, 'w', encoding='utf-8') as f:
+                f.write(src_code)
+            print(f"  [+] {os.path.basename(target_path)} -> {os.path.basename(dest_path)} {status} ({len(src_code.splitlines())} lines)")
+            print(f"[OK] Completed: {dest_path}\n")
+        except Exception as e:
+            print(f"  [!] Decompilation failed: {e}")
+        return
+
     if os.path.isdir(target_path):
         archives = sorted(glob.glob(os.path.join(target_path, "*.mtmod")) + glob.glob(os.path.join(target_path, "*.wotmod")))
         if not archives:
-            archives = sorted(glob.glob(os.path.join(target_path, "**", "*.mtmod"), recursive=True))
+            archives = sorted(glob.glob(os.path.join(target_path, "**", "*.mtmod"), recursive=True) + glob.glob(os.path.join(target_path, "**", "*.wotmod"), recursive=True))
     else:
         archives = [target_path]
 

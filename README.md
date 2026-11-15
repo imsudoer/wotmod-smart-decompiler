@@ -43,6 +43,7 @@ wotmod-smart-decompiler/
 ├── LICENSE                  # Лицензия GPL-3.0
 ├── README.md                # Документация
 ├── src/                     # Исходный код инструмента
+│   ├── unwrapper.py         # Распаковщик контейнеров PJOrion (bit-reversal + zlib)
 │   ├── deobfuscator.py      # Графовый анализатор CFG, поиск OEP, очистка инструкций
 │   ├── decompiler.py        # Запуск декомпиляторов и выбор лучшего результата
 │   ├── postprocessor.py     # Восстановление сигнатур функций и очистка синтаксиса
@@ -77,11 +78,19 @@ wotmod-smart-decompiler/
 
 ## Использование
 
-### Декомпиляция одного мода
+### Декомпиляция одного мода или отдельного .pyc файла
 
 ```bash
+# Архив мода (.wotmod или .mtmod)
 python wotmod_decompiler.py decompile path/to/mod_file.mtmod -o ./output_src
+
+# Одиночный скомпилированный скрипт (.pyc)
+python wotmod_decompiler.py decompile path/to/mod_StatsPRO_LE.pyc -o ./output_src
 ```
+
+Утилита автоматически определяет тип файла:
+- Для `.wotmod` / `.mtmod` извлекает все файлы и декомпилирует скрипты.
+- Для `.pyc` проверяет наличие внешней оболочки PJOrion (`<pjorion_protected>`, битовая инверсия + zlib компрессия), распаковывает внутренний байт-код, восстанавливает OEP и сохраняет чистый `.py` исходник. Подходит для разбора скриптов из смежных игр Wargaming / Lesta (World of Warplanes, World of Warships), использующих аналогичный стек Python 2.7.
 
 ### Декомпиляция папки с модами
 

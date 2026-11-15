@@ -4,6 +4,7 @@ Multi-engine decompiler runner integrating uncompyle6, pycdc, and automatic deob
 """
 
 import io
+import sys
 import os
 import tempfile
 import subprocess
@@ -12,6 +13,7 @@ from xdis import marsh
 import uncompyle6
 
 from .deobfuscator import find_oep, deob_code_obj, init_marshal_patches
+from .unwrapper import unwrap_pjorion_bytes
 from .postprocessor import postprocess_source
 
 init_marshal_patches()
@@ -30,28 +32,42 @@ def run_pycdc(pyc_path, pycdc_bin="pycdc"):
 
 def run_uncompyle6(pyc_path):
     """
-    Executes uncompyle6 in-process.
+    Executes uncompyle6 in-process with captured output.
     """
     buf = io.StringIO()
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    sys.stdout = io.StringIO()
+    sys.stderr = io.StringIO()
     try:
         uncompyle6.decompile_file(pyc_path, outstream=buf)
         return buf.getvalue(), None
     except Exception as e:
         return buf.getvalue(), str(e)
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
 
 
 def decompile_bytecode(pyc_bytes, pycdc_bin="pycdc"):
     """
     Deobfuscates and decompiles Python 2.7 bytecode data.
+    Supports packed and obfuscated PJOrion containers.
     Returns: (decompiled_source_string, is_obfuscated)
     """
+    pyc_bytes, was_unwrapped = unwrap_pjorion_bytes(pyc_bytes)
+
     with tempfile.NamedTemporaryFile(suffix='.pyc', delete=False) as tf:
         tf.write(pyc_bytes)
         tmp_pyc = tf.name
 
     try:
         version, timestamp, magic_int, co, is_pypy, source_size, sip_hash = load_module(tmp_pyc)
-        is_pjo = (co.co_name == '<pjorion_obfuscated>' or find_oep(bytearray(co.co_code)) != 0)
+
+        if was_unwrapped and len(co.co_code) < 300 and len(co.co_consts) >= 2 and hasattr(co.co_consts[1], 'co_code'):
+            co = co.co_consts[1]
+
+        is_pjo = was_unwrapped or (co.co_name in ('<pjorion_obfuscated>', '<pjorion_protected>') or find_oep(bytearray(co.co_code)) != 0)
 
         cleaned_co = co
         if is_pjo:
