@@ -6,6 +6,7 @@ Multi-engine decompiler runner integrating uncompyle6, pycdc, and automatic deob
 import io
 import sys
 import os
+import re
 import tempfile
 import subprocess
 from xdis.load import load_module
@@ -17,6 +18,35 @@ from .unwrapper import unwrap_pjorion_bytes
 from .postprocessor import postprocess_source
 
 init_marshal_patches()
+
+
+def sanitize_code_identifiers(co_obj):
+    """
+    Sanitizes unprintable or non-ASCII control characters in code object symbol tables.
+    Prevents decompiler output from containing broken tofu/box characters (\\x00-\\x1f).
+    """
+    def sanitize(name, prefix='v', idx=0):
+        if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
+            return name
+        return f"{prefix}_{idx}"
+
+    new_varnames = tuple(sanitize(n, 'var', i) for i, n in enumerate(co_obj.co_varnames))
+    new_names = tuple(sanitize(n, 'name', i) for i, n in enumerate(co_obj.co_names))
+    new_name = sanitize(co_obj.co_name, 'func', 0)
+
+    new_consts = []
+    for c in co_obj.co_consts:
+        if hasattr(c, 'co_code'):
+            new_consts.append(sanitize_code_identifiers(c))
+        else:
+            new_consts.append(c)
+
+    return co_obj.replace(
+        co_varnames=new_varnames,
+        co_names=new_names,
+        co_name=new_name,
+        co_consts=tuple(new_consts)
+    )
 
 
 def run_pycdc(pyc_path, pycdc_bin="pycdc"):
@@ -72,10 +102,12 @@ def decompile_bytecode(pyc_bytes, pycdc_bin="pycdc"):
         cleaned_co = co
         if is_pjo:
             cleaned_co = deob_code_obj(co)
-            dumped = marsh.dumps(cleaned_co, python_version=(2, 7))
-            header = bytes.fromhex('03f30d0a') + (timestamp or 0).to_bytes(4, 'little')
-            with open(tmp_pyc, 'wb') as f:
-                f.write(header + dumped)
+
+        cleaned_co = sanitize_code_identifiers(cleaned_co)
+        dumped = marsh.dumps(cleaned_co, python_version=(2, 7))
+        header = bytes.fromhex('03f30d0a') + (timestamp or 0).to_bytes(4, 'little')
+        with open(tmp_pyc, 'wb') as f:
+            f.write(header + dumped)
 
         u6_out, u6_err = run_uncompyle6(tmp_pyc)
         cdc_out = run_pycdc(tmp_pyc, pycdc_bin) if pycdc_bin and os.path.exists(pycdc_bin) else ''
