@@ -93,8 +93,8 @@ The toolchain processes target files through a multi-stage recovery pipeline:
 ### Setup
 
 ```bash
-git clone https://github.com/imsudoer/wotmod-smart-decompiler.git
-cd wotmod-smart-decompiler
+git clone https://github.com/imsudoer/pjorion-decompiler.git
+cd pjorion-decompiler
 pip install -r requirements.txt
 ```
 
@@ -146,7 +146,7 @@ The build command:
 ## Project Structure
 
 ```text
-wotmod-smart-decompiler/
+pjorion-decompiler/
 ├── pjorion_decompiler.py     # Primary CLI entrypoint
 ├── wotmod_decompiler.py      # Backward-compatible CLI alias
 ├── requirements.txt          # Python 3 dependencies
