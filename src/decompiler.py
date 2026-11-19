@@ -15,6 +15,7 @@ import uncompyle6
 
 from .deobfuscator import find_oep, deob_code_obj, init_marshal_patches
 from .unwrapper import unwrap_pjorion_bytes
+from .pjorion_vm import try_unpack_pjorion_vm
 from .postprocessor import postprocess_source
 
 init_marshal_patches()
@@ -85,6 +86,10 @@ def decompile_bytecode(pyc_bytes, pycdc_bin="pycdc"):
     Supports packed and obfuscated PJOrion containers.
     Returns: (decompiled_source_string, is_obfuscated)
     """
+    vm_source, is_vm = try_unpack_pjorion_vm(pyc_bytes)
+    if is_vm and vm_source:
+        return vm_source, True
+
     pyc_bytes, was_unwrapped = unwrap_pjorion_bytes(pyc_bytes)
 
     with tempfile.NamedTemporaryFile(suffix='.pyc', delete=False) as tf:
