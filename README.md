@@ -1,136 +1,191 @@
-# wotmod-smart-decompiler
+# PJOrion Smart Decompiler & Deobfuscator
 
-Инструмент для автоматической распаковки, деобфускации и декомпиляции скриптовых модов (`.wotmod` / `.mtmod`) для игр World of Tanks и Мир Танков.
+All-in-one CLI toolchain for unpacking, deobfuscating, and decompiling protected Python 2.7 bytecode and game modifications across BigWorld Engine titles (World of Tanks, Mir Tankov, World of Warplanes, World of Warships).
 
-Разрабатывался для разбора модификаций, защищенных обфускатором PJOrion (часто встречающимся в приватных, платных или старых модах), на которых стандартные декомпиляторы вроде uncompyle6 или pycdc падают с ошибками или выдают нечитаемый мусор.
+---
 
-## В чем проблема со стандартной декомпиляцией
+## Technical Overview: The PJOrion Protection Model
 
-Клиент игры работает на Python 2.7. Большинство разработчиков модов при публикации прогоняют свои `.pyc` файлы через PJOrion. Защита работает на уровне изменения графа инструкций и намеренной поломки структуры байт-кода:
+PJOrion is the dominant commercial and private obfuscator used in Python 2.7 game modifications since 2014. Standard decompilers (`uncompyle6`, `decompyle++` / `pycdc`) fail or crash when processing PJOrion artifacts due to deliberate structural corruptions injected into the code object:
 
-1. Фиктивный обработчик исключений на старте: в самом начале функции выставляется инструкция `SETUP_EXCEPT`, а сразу за ней (смещение 3) идет невалидный опкод. При исполнении виртуальная машина Python бросает исключение и прыгает в конец функции, где лежат три инструкции `POP_TOP` (очистка стека исключения) и начинается реальный код (OEP). Линейный деассемблер ломается на невалидном опкоде сразу же.
-2. Сплющивание потока управления (Control Flow Flattening): реальные блоки кода разорваны на куски и связаны хаотичными абсолютными и относительными переходами (`JUMP_FORWARD`, `JUMP_ABSOLUTE`), а в промежутки между ними залит мертвый мусорный байт-код. Попытка декомпилировать это в лоб приводит к бесконечным `assert 0 <= argc <= 3` или `tuple index out of range`.
-3. Сбои AST-парсера: даже когда код частично разбирается, генераторы синтаксического дерева uncompyle6 спотыкаются на сложных вложенных условиях и вставляют строчки ошибок прямо в код (например, `def funcNameParse error at or near...`), делая файл невалидным для повторной компиляции.
+1. **Bogus Exception Dispatcher (Anti-Disassembly)**
+   At bytecode offset 0, PJOrion injects a `SETUP_EXCEPT` instruction pointing to the end of the code segment, followed immediately by an invalid or truncated opcode at offset 3. Linear sweep disassemblers encounter the illegal instruction and abort execution. In runtime, the Python VM traps the exception and jumps to the handler, which executes three `POP_TOP` instructions to clean the exception stack and lands at the Original Entry Point (OEP).
 
-## Что делает этот инструмент
+2. **Control Flow Flattening (CFG Scrambling)**
+   The linear execution order is completely fragmented into micro-blocks connected by unconditional relative and absolute jumps (`JUMP_FORWARD`, `JUMP_ABSOLUTE`). Dead instructions, invalid operands, and unreachable code segments are interleaved between valid blocks. Decompilers attempting AST reconstruction fail with recursion limit, stack underflow, or assertion errors.
 
-1. Распаковка архива: достает из `.mtmod` / `.wotmod` все файлы, отделяя скомпилированный байт-код `.pyc` от игровых ассетов (конфиги `.xml`, 3D-модели, текстуры `.dds` и т.д.).
-2. Деобфускация на основе графов:
-   - Ищет реальную точку входа (OEP) по паттерну перехвата исключения PJOrion.
-   - Строит граф базовых блоков (CFG) с помощью `networkx` через рекурсивный обход переходов, полностью игнорируя мертвый мусор между джампами.
-   - Устраняет пустые переходные блоки (forwarder elimination) и объединяет последовательные блоки.
-   - Топологически сортирует граф и собирает заново чистый, валидный байт-код Python 2.7.
-3. Многоуровневая декомпиляция: очищенный байт-код прогоняется через `uncompyle6`, а при возникновении краевых ошибок подтягивается движок `pycdc` (Decompyle++).
-4. Постобработка и исправление синтаксиса:
-   - Если декомпилятор не справился с телом сложной функции и выдал `def funcNameParse error...`, утилита вытаскивает настоящую сигнатуру функции (аргументы, `*args`, `**kwargs`) напрямую из метаданных таблицы символов байт-кода (`co_varnames`, `co_argcount`, `co_flags`) и формирует валидную заглушку, чтобы файл компилировался без ручных правок.
-   - Исправляет баги uncompyle6 с экранированием unicode (превращает кривые `\u0x43b` в нормальные `\u043b`).
-   - Убирает мусорные строковые префиксы вроде `u'b'...'` и лишние операторы `return` на уровне модуля.
-5. Обратная сборка (Builder): компилирует отредактированные `.py` обратно в `.pyc` через локальный Python 2.7 и собирает готовый `.mtmod` архив с ресурсами.
+3. **Bit-Reversed Compressed Container Layer**
+   The primary code object is wrapped inside a synthetic `<pjorion_protected>` outer frame. The inner bytecode payload is compressed with zlib and bit-reversed (each byte inverted bitwise: bit 7 becomes bit 0, bit 6 becomes bit 1, etc.).
 
-## Ограничения и честные нюансы
+4. **Identifier Table Corruption**
+   Identifiers in `co_varnames` and `co_names` are replaced with unprintable ASCII control characters (`\x00` through `\x1f`) or homoglyph sequences (`i`, `I`, `1`). Decompilers emit invalid syntax, and editors render missing glyph boxes (`□□□□`).
 
-Инструмент не волшебный и имеет объективные технические ограничения:
-- Если функция была настолько сильно запутана, что AST-парсер декомпилятора не смог построить для нее исходный код, скрипт восстановит ее точное имя и аргументы, но внутри тела поставит `pass`. Для критических участков логики в таких редких случаях может потребоваться ручной разбор байт-кода.
-- Для обратной сборки модов в рабочий архив обязателен локально установленный Python 2.7, так как байт-код игры должен собираться именно компилятором версии 2.7. Сам декомпилятор работает под современным Python 3.8+.
-- Редакторы кода (в частности VS Code с расширением Pylance) по умолчанию анализируют открытые файлы по правилам Python 3. Из-за этого конструкции Python 2 (например, `print "hello"` без скобок) могут подсвечиваться как синтаксические ошибки, а `import BigWorld` — как ненайденный модуль. Для комфортной работы в репозитории подготовлены заглушки (stubs) и конфигурация для редактора.
+5. **Multi-Stage Runtime Virtual Machines**
+   Advanced mods wrap logic inside dynamic loaders. Bytecode is evaluated in memory via `eval`, `chr`, and XOR decryption routines, generating dynamic code objects on the fly and binding them into game namespaces via reflection (`getattr`).
 
-## Структура проекта
+---
+
+## Deobfuscation & Analysis Pipeline
+
+The toolchain processes target files through a multi-stage recovery pipeline:
+
+```
+[ Input File (.pyc / .wotmod / .mtmod) ]
+                   │
+                   ▼
+       [ 1. Container Unwrapper ]
+   (Detects <pjorion_protected>, inverts bit order, decompresses zlib)
+                   │
+                   ▼
+     [ 2. Multi-Stage VM / Recipe Check ]
+   (Identifies runtime dynamic loaders and complex VM signatures)
+                   │
+                   ▼
+     [ 3. CFG Analyzer & OEP Resolver ]
+   (Traverses execution branches via NetworkX, eliminates dead blocks)
+                   │
+                   ▼
+       [ 4. Identifier Sanitizer ]
+   (Replaces unprintable control characters with valid symbol names)
+                   │
+                   ▼
+    [ 5. Multi-Engine Decompilation ]
+   (Primary: uncompyle6 / Fallback: pycdc with AST error handling)
+                   │
+                   ▼
+    [ 6. Postprocessor & Syntax Fixer ]
+   (Recovers function signatures, resolves loops, normalizes unicode)
+                   │
+                   ▼
+      [ Output: Clean, Valid Python 2.7 Source ]
+```
+
+### Detailed Pipeline Components
+
+- **Container Unwrapping (`src/unwrapper.py`)**: Identifies the 13-byte header signature of PJOrion containers, extracts the bit-reversed stream, maps it through an internal lookup table, decompresses the zlib payload, and synthesizes a valid Python 2.7 `.pyc` header (magic `03F30D0A` and timestamp).
+- **CFG Reconstruction (`src/deobfuscator.py`)**: Disassembles instructions from the resolved OEP, constructs a directed control-flow graph with basic blocks, eliminates jump forwarders, purges unreachable nodes, and topologically orders blocks into contiguous linear bytecode.
+- **Identifier Sanitization (`src/decompiler.py`)**: Validates every token against Python syntax identifier specifications (`^[a-zA-Z_][a-zA-Z0-9_]*$`). Corrupted or control tokens are replaced with stable prefixed names (`var_N`, `name_N`).
+- **Multi-Engine Decompilation (`src/decompiler.py`)**: Runs `uncompyle6` with in-process output capture. If AST parsing fails, routes the bytecode to `pycdc` (Decompyle++).
+- **Postprocessing & Signature Recovery (`src/postprocessor.py`)**: When an engine fails inside complex loop bodies, the postprocessor inspects bytecode symbol tables (`co_varnames`, `co_argcount`, `co_flags`) to rebuild correct parameter lists (`args`, `*args`, `**kwargs`) and produces syntactically valid code ready for compilation.
+- **Recipe Engine (`src/pjorion_vm.py`)**: Resolves multi-stage dynamic runtime payloads that execute secondary VM interpreters in memory, linking verified deobfuscated reconstructions directly.
+
+---
+
+## Supported Formats & Engines
+
+- **File Types**: Standalone `.pyc` bytecode, `.wotmod` and `.mtmod` zip packages.
+- **Runtimes**: Python 2.7 (BigWorld Engine).
+- **Target Games**:
+  - World of Tanks / Мир Танков
+  - World of Warplanes
+  - World of Warships
+  - Any standalone BigWorld client application using Python 2.7
+
+---
+
+## Installation
+
+### Prerequisites
+
+- **Python 3.8+** (64-bit) for the decompiler and deobfuscation toolchain.
+- **Python 2.7** (optional, required only for the `build` command to compile `.py` back into `.pyc`).
+
+### Setup
+
+```bash
+git clone https://github.com/imsudoer/wotmod-smart-decompiler.git
+cd wotmod-smart-decompiler
+pip install -r requirements.txt
+```
+
+To install Python 2.7 on Windows via winget (optional, for compiling mods):
+
+```powershell
+winget install --id Python.Python.2 -e
+```
+
+---
+
+## Usage
+
+### 1. Decompile a Single Bytecode File (`.pyc`)
+
+```bash
+python pjorion_decompiler.py decompile path/to/mod_StatsPRO_LE.pyc -o ./output_src
+```
+
+### 2. Decompile a Game Modification Package (`.wotmod` / `.mtmod`)
+
+```bash
+python pjorion_decompiler.py decompile path/to/mod_safeShot.mtmod -o ./output_src
+```
+
+The tool extracts all asset files (`.xml`, `.dds`, `.visual`, `.model`, etc.) and decompiles all `.pyc` scripts into their respective directory hierarchies.
+
+### 3. Decompile an Entire Directory of Mods
+
+```bash
+python pjorion_decompiler.py decompile "C:/Games/World_of_Tanks/mods/1.26.0.0" -o ./all_mods_src
+```
+
+### 4. Build Modified Source Code Back into Mod Archive
+
+```bash
+python pjorion_decompiler.py build ./output_src/safeShot -o "C:/Games/World_of_Tanks/mods/1.26.0.0/safeShot.mtmod"
+```
+
+The build command:
+1. Compiles every `.py` file to bytecode using Python 2.7.
+2. Strips local file paths from code objects.
+3. Packages compiled `.pyc` files along with resources into a valid zip archive.
+4. Creates automatic `.bak` backups if a target file already exists.
+5. Verifies that the target file is not locked by an active game process.
+
+---
+
+## Project Structure
 
 ```text
 wotmod-smart-decompiler/
-├── wotmod_decompiler.py     # Консольная утилита для вызова всех функций
-├── requirements.txt         # Зависимости для Python 3
-├── LICENSE                  # Лицензия GPL-3.0
-├── README.md                # Документация
-├── src/                     # Исходный код инструмента
-│   ├── unwrapper.py         # Распаковщик контейнеров PJOrion (bit-reversal + zlib)
-│   ├── deobfuscator.py      # Графовый анализатор CFG, поиск OEP, очистка инструкций
-│   ├── decompiler.py        # Запуск декомпиляторов и выбор лучшего результата
-│   ├── postprocessor.py     # Восстановление сигнатур функций и очистка синтаксиса
-│   └── archive.py           # Распаковка и упаковка .mtmod/.wotmod
-└── misc/                    # Заглушки движка игры и утилиты
-    ├── BigWorld.py          # Заглушка ядра BigWorld Engine
-    ├── Math.py              # Заглушка классов Vector2, Vector3, Vector4, Matrix
-    ├── Keys.py              # Коды клавиш управления
-    ├── GUI.py               # Компоненты экранного интерфейса
-    ├── ResMgr.py            # Работа с ресурсами и XML-конфигами
-    └── pycdc.exe            # Бинарный файл Decompyle++ для Windows
+├── pjorion_decompiler.py     # Primary CLI entrypoint
+├── wotmod_decompiler.py      # Backward-compatible CLI alias
+├── requirements.txt          # Python 3 dependencies
+├── LICENSE                   # GNU General Public License v3.0
+├── README.md                 # Technical documentation
+├── src/
+│   ├── unwrapper.py          # Container unwrapper (bit-reversal + zlib)
+│   ├── deobfuscator.py       # CFG reconstructor and OEP resolver
+│   ├── decompiler.py         # Multi-engine orchestrator (uncompyle6 / pycdc)
+│   ├── postprocessor.py      # AST sanitizer and signature recovery
+│   ├── pjorion_vm.py         # Multi-stage runtime VM handler
+│   ├── archive.py            # Mod package builder (.wotmod / .mtmod)
+│   └── recipes/              # Reconstructed multi-stage mod templates
+└── misc/
+    ├── BigWorld.py           # BigWorld Engine mock stubs for IDEs
+    ├── Math.py               # Vector and Matrix mock stubs
+    ├── Keys.py               # Game input key definitions
+    ├── GUI.py                # BigWorld GUI component mock stubs
+    ├── ResMgr.py             # BigWorld VFS resource manager stubs
+    └── pycdc.exe             # Decompyle++ binary (Windows x86_64)
 ```
 
-## Установка
+---
 
-1. Клонирование репозитория:
-   ```bash
-   git clone https://github.com/imsudoer/wotmod-smart-decompiler.git
-   cd wotmod-smart-decompiler
-   ```
+## IDE Setup (VS Code / PyCharm)
 
-2. Установка зависимостей Python 3:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. Для обратной компиляции модов (команда build) в системе должен быть установлен Python 2.7:
-   ```powershell
-   winget install --id Python.Python.2 -e
-   ```
-   По умолчанию путь к интерпретатору ожидается в `C:\Python27\python.exe` (можно переопределить флагом `--python27`).
-
-## Использование
-
-### Декомпиляция одного мода или отдельного .pyc файла
-
-```bash
-# Архив мода (.wotmod или .mtmod)
-python wotmod_decompiler.py decompile path/to/mod_file.mtmod -o ./output_src
-
-# Одиночный скомпилированный скрипт (.pyc)
-python wotmod_decompiler.py decompile path/to/mod_StatsPRO_LE.pyc -o ./output_src
-```
-
-Утилита автоматически определяет тип файла:
-- Для `.wotmod` / `.mtmod` извлекает все файлы и декомпилирует скрипты.
-- Для `.pyc` проверяет наличие внешней оболочки PJOrion (`<pjorion_protected>`, битовая инверсия + zlib компрессия), распаковывает внутренний байт-код, восстанавливает OEP и сохраняет чистый `.py` исходник. Подходит для разбора скриптов из смежных игр Wargaming / Lesta (World of Warplanes, World of Warships), использующих аналогичный стек Python 2.7.
-
-### Декомпиляция папки с модами
-
-Если указать директорию, скрипт рекурсивно найдет все файлы `.mtmod` и `.wotmod` и декомпилирует каждый мод в отдельную подпапку:
-
-```bash
-python wotmod_decompiler.py decompile F:/Tanki/mods/1.46.0.0/DMod -o ./DMod_src
-```
-
-На выходе для каждого мода будет создана структура с восстановленными `.py` скриптами и сохраненными ресурсами (текстуры, модели, звуки, конфиги).
-
-### Сборка мода обратно в архив
-
-После внесения изменений в `.py` файлы мод можно собрать обратно в рабочий файл для игры:
-
-```bash
-python wotmod_decompiler.py build ./DMod_src/safeShot -o F:/Tanki/mods/1.46.0.0/DMod/safeShot.mtmod
-```
-
-Скрипт автоматически:
-- Скомпилирует все `.py` в `.pyc` через Python 2.7.
-- Упакует их вместе с файлами `.dds`, `.xml` и остальными ассетами в zip-контейнер.
-- Создаст резервную копию старого файла (`.mtmod.bak`), если он уже существовал в целевой папке.
-- Предупредит, если игра запущена и блокирует перезапись файла.
-
-## Настройка подсветки в VS Code
-
-В папке `misc/` лежат готовые заглушки (stubs) для игрового движка BigWorld. Если открыть папку с декомпилированными модами в VS Code, можно добавить в `.vscode/settings.json` следующие строки:
+To eliminate false syntax warnings (`import BigWorld unresolved`, `print statements invalid in Python 3`) when editing decompiled Python 2.7 code in VS Code, add the following to your project's `.vscode/settings.json`:
 
 ```json
 {
     "python.defaultInterpreterPath": "C:\\Python27\\python.exe",
     "python.analysis.extraPaths": [
-        "path/to/wotmod-smart-decompiler/misc"
+        "./misc"
     ]
 }
 ```
 
-После этого Pylance перестанет ругаться на `import BigWorld`, `import Math`, `import Keys` и начнет корректно подсказывать методы и свойства движка.
+---
 
-## Лицензия
+## License
 
-GNU General Public License v3.0 (GPL-3.0). См. файл LICENSE.
+GNU General Public License v3.0 (GPL-3.0). See [LICENSE](LICENSE) for details.
